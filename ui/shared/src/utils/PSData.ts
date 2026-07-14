@@ -1,7 +1,7 @@
-import { getCommitUrl, extractNameOnly, extractBodyPreTrailer, formatDate, timeAgo } from './util';
+import { getCommitUrl, extractNameOnly, extractBodyPreTrailer, timeAgo } from './util';
 import { getEnvironmentStatus, getHealthStatus } from './getStatus';
 import type {
-  CommitStatus,
+  BranchCommitStatus,
   Commit,
   Environment,
   PromotionStrategy,
@@ -9,12 +9,13 @@ import type {
   EnrichedEnvDetails,
   PromotionPhase,
   ReferenceCommit,
+  RelativeTimeAgo,
 } from '../types/promotion';
 
-function getChecks(commitStatuses: CommitStatus[]): Check[] {
-  return commitStatuses.map((cs: CommitStatus) => ({
+function getChecks(commitStatuses: BranchCommitStatus[]): Check[] {
+  return commitStatuses.map((cs: BranchCommitStatus) => ({
     name: cs.key,
-    status: cs.phase || 'unknown',
+    status: cs.phase,
     description: cs.description,
     url: cs.url,
   }));
@@ -45,7 +46,8 @@ function extractReferenceCommitData(dryCommit: Commit): null | ReferenceCommit {
   const subject = referenceCommit.subject || '-';
   const body = referenceCommit.body || '-';
 
-  const date = referenceCommit.date ? formatDate(referenceCommit.date) : '-';
+  // Pass RFC 3339 through for TimeAgo; do not formatDate here.
+  const date = referenceCommit.date;
   const url = getCommitUrl(referenceCommit.repoURL || '', referenceCommit.sha || '');
 
   return { sha, author, subject, body, date, url };
@@ -76,31 +78,33 @@ function getEnvDetails(environment: Environment, index: number = 0): EnrichedEnv
 
   const promotionStatus = getEnvironmentStatus(environment);
 
-  // Use PR data from selected history entry
-  const selectedHistoryEntry = history[index] || history[0];
-  const entryPr = selectedHistoryEntry?.pullRequest;
+  // Use PR data from the selected history entry only; live PR fallbacks apply at index 0.
+  const entryPr = history[index]?.pullRequest ?? null;
   const historyWithPr = entryPr?.id ? entryPr : null;
 
   // For the live active badge, fall back to environment.pullRequest when state is merged
   // and history[0] has no PR data (e.g. externally merged PRs)
   const mergedEnvPr =
-    pullRequest?.id && (pullRequest?.state === 'merged' || pullRequest?.externallyMergedOrClosed)
+    pullRequest?.id && (pullRequest.state === 'merged' || pullRequest.externallyMergedOrClosed)
       ? pullRequest
       : null;
-  const activePr = historyWithPr ?? mergedEnvPr;
+  const activePr = index > 0 ? historyWithPr : (historyWithPr ?? mergedEnvPr);
 
   // Resolve merge time: prefer prMergeTime, fall back to hydrated commitTime
-  let historyMergeTimeAgo: string | null = null;
+  let historyMergeTimeAgo: RelativeTimeAgo | null = null;
   if (index > 0) {
-    const entry = history[index];
     const mergeTimeStr =
-      entry?.pullRequest?.prMergeTime || entry?.active?.hydrated?.commitTime || null;
+      history[index]?.pullRequest?.prMergeTime ||
+      history[index]?.active?.hydrated?.commitTime ||
+      null;
     historyMergeTimeAgo = mergeTimeStr ? timeAgo(mergeTimeStr) : null;
   }
 
   // Merge time for the live (index 0) active PR
   const liveMergeTimeStr = activePr?.prMergeTime || history[0]?.pullRequest?.prMergeTime || null;
-  const activeMergeTimeAgo = liveMergeTimeStr ? timeAgo(liveMergeTimeStr) : null;
+  const activeMergeTimeAgo: RelativeTimeAgo | null = liveMergeTimeStr
+    ? timeAgo(liveMergeTimeStr)
+    : null;
 
   // In historical view, proposed cards should only show status info, not commit details
   const isHistoric = index > 0;
@@ -117,7 +121,7 @@ function getEnvDetails(environment: Environment, index: number = 0): EnrichedEnv
     activeCommitSubject: activeCommitInfo.subject || '-',
     activeCommitMessage: extractBodyPreTrailer(activeCommitInfo.body || '-'),
     activeCommitAuthor: extractNameOnly(activeCommitInfo.author || '-'),
-    activeCommitDate: activeCommitInfo.commitTime ? formatDate(activeCommitInfo.commitTime) : '-',
+    activeCommitDate: activeCommitInfo.commitTime || '',
     activeCommitUrl: getCommitUrl(activeCommitInfo.repoURL ?? '', activeCommitInfo.sha ?? ''),
     activeSha: activeCommitInfo.sha ? activeCommitInfo.sha.slice(0, 7) : '-',
     activeReferenceCommit: activeReferenceData,
@@ -136,7 +140,7 @@ function getEnvDetails(environment: Environment, index: number = 0): EnrichedEnv
     proposedDryCommitSubject: proposedDry.subject || '-',
     proposedDryCommitBody: extractBodyPreTrailer(proposedDry.body || '-'),
     proposedDryCommitAuthor: extractNameOnly(proposedDry.author || '-'),
-    proposedDryCommitDate: proposedDry.commitTime ? formatDate(proposedDry.commitTime) : '-',
+    proposedDryCommitDate: proposedDry.commitTime || '',
     proposedDryCommitUrl: getCommitUrl(proposedDry.repoURL ?? '', proposedDry.sha ?? ''),
     proposedSha: proposedDry.sha ? proposedDry.sha.slice(0, 7) : '-',
     proposedReferenceCommit: proposedReferenceData,
@@ -150,12 +154,38 @@ function getEnvDetails(environment: Environment, index: number = 0): EnrichedEnv
   };
 }
 
+// Returns branch names whose proposed commit has not yet been hydrated to the
+// newest dry commit. Envs with no proposed commit are not processing.
+export function getProcessingEnvs(environments: Environment[]): Set<string> {
+  const effectiveDrySha = (e: Environment) => e.proposed.note?.drySha || e.proposed.dry?.sha || '';
+  const hasProposedChange = (e: Environment) =>
+    !!e.proposed.dry?.sha && e.active.dry?.sha !== e.proposed.dry.sha;
+
+  let target = '',
+    newest = -Infinity;
+  for (const e of environments) {
+    const sha = effectiveDrySha(e);
+    if (!sha) continue;
+    const t = Date.parse(e.proposed.hydrated?.commitTime ?? '') || 0;
+    if (!target || t > newest) {
+      target = sha;
+      newest = t;
+    }
+  }
+  if (!target) return new Set();
+  return new Set(
+    environments
+      .filter((e) => hasProposedChange(e) && effectiveDrySha(e) !== target)
+      .map((e) => e.branch),
+  );
+}
+
 // Takes the PS objects (for dashboard)
 export function enrichFromCRD(
   ps: PromotionStrategy,
   historyIndex: number = 0,
 ): EnrichedEnvDetails[] {
-  if (!ps?.status?.environments) {
+  if (!ps.status?.environments) {
     return [];
   }
 
@@ -169,9 +199,6 @@ export function enrichFromEnvironments(
   environments: Environment[],
   historyIndex: number = 0,
 ): EnrichedEnvDetails[] {
-  if (!environments) {
-    return [];
-  }
   return environments.map((environment: Environment) => getEnvDetails(environment, historyIndex));
 }
 

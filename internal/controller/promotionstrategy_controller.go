@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"path"
 	"reflect"
 	"sync"
 	"time"
@@ -37,7 +38,6 @@ import (
 	"github.com/argoproj-labs/gitops-promoter/internal/types/constants"
 	"github.com/argoproj-labs/gitops-promoter/internal/utils"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	acmetav1 "k8s.io/client-go/applyconfigurations/meta/v1"
@@ -68,10 +68,11 @@ type PromotionStrategyReconciler struct {
 	enqueueStateMutex sync.Mutex
 }
 
-//+kubebuilder:rbac:groups=promoter.argoproj.io,resources=promotionstrategies,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups=promoter.argoproj.io,resources=promotionstrategies,verbs=get;list;watch
 //+kubebuilder:rbac:groups=promoter.argoproj.io,resources=promotionstrategies/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=promoter.argoproj.io,resources=promotionstrategies/finalizers,verbs=update
-
+//+kubebuilder:rbac:groups=promoter.argoproj.io,resources=changetransferpolicies,verbs=get;list;watch;patch;create;delete
+//+kubebuilder:rbac:groups=promoter.argoproj.io,resources=commitstatuses,verbs=get;list;watch;patch;create
 //+kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 //+kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 //+kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
@@ -87,8 +88,18 @@ func (r *PromotionStrategyReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	startTime := time.Now()
 
 	var ps promoterv1alpha1.PromotionStrategy
+	// skipStatusWrite is set on the deletion fast-path below to suppress the deferred status
+	// apply: the controller intentionally stops reconciling deleting objects, so patching
+	// status (and emitting Ready events) for them is pure noise.
+	skipStatusWrite := false
 	// This function applies the resource status via Server-Side Apply at the end of the reconciliation. Don't write status manually.
-	defer utils.HandleReconciliationResult(ctx, startTime, &ps, r.Client, r.Recorder, constants.PromotionStrategyControllerFieldOwner, &result, &err)
+	var previousReady *metav1.Condition
+	defer func() {
+		if skipStatusWrite {
+			return
+		}
+		utils.HandleReconciliationResult(ctx, startTime, &ps, r.Client, r.Recorder, constants.PromotionStrategyControllerFieldOwner, &result, &err, &previousReady)
+	}()
 
 	err = r.Get(ctx, req.NamespacedName, &ps, &client.GetOptions{})
 	if err != nil {
@@ -102,12 +113,13 @@ func (r *PromotionStrategyReconciler) Reconcile(ctx context.Context, req ctrl.Re
 
 	// If the resource is being deleted, stop reconciling immediately without requeuing
 	if !ps.DeletionTimestamp.IsZero() {
+		skipStatusWrite = true
 		logger.V(4).Info("PromotionStrategy is being deleted, skipping reconciliation")
 		return ctrl.Result{}, nil
 	}
 
 	// Remove any existing Ready condition. We want to start fresh.
-	meta.RemoveStatusCondition(ps.GetConditions(), string(promoterConditions.Ready))
+	previousReady = utils.RemoveReadyCondition(&ps)
 
 	// If a ChangeTransferPolicy does not exist, create it otherwise get it and store the ChangeTransferPolicy in a slice with the same order as ps.Spec.Environments.
 	ctps := make([]*promoterv1alpha1.ChangeTransferPolicy, len(ps.Spec.Environments))
@@ -164,6 +176,10 @@ func (r *PromotionStrategyReconciler) SetupWithManager(ctx context.Context, mgr 
 		return fmt.Errorf("failed to set field index for .spec.sha: %w", err)
 	}
 
+	if err := RegisterGatePromotionStrategyRefFieldIndexes(ctx, mgr.GetFieldIndexer()); err != nil {
+		return err
+	}
+
 	// Use Direct methods to read configuration from the API server without cache during setup.
 	// The cache is not started during SetupWithManager, so we must use the non-cached API reader.
 	rateLimiter, err := settings.GetRateLimiterDirect[promoterv1alpha1.PromotionStrategyConfiguration, ctrl.Request](ctx, r.SettingsMgr)
@@ -190,10 +206,10 @@ func (r *PromotionStrategyReconciler) SetupWithManager(ctx context.Context, mgr 
 func (r *PromotionStrategyReconciler) upsertChangeTransferPolicy(ctx context.Context, ps *promoterv1alpha1.PromotionStrategy, environment promoterv1alpha1.Environment) (*promoterv1alpha1.ChangeTransferPolicy, error) {
 	logger := log.FromContext(ctx)
 
-	ctpName := utils.KubeSafeUniqueName(ctx, utils.GetChangeTransferPolicyName(ps.Name, environment.Branch))
+	ctpName := utils.KubeSafeUniqueName(utils.GetChangeTransferPolicyName(ps.Name, environment.Branch))
 
 	// Build owner reference
-	kind := reflect.TypeOf(promoterv1alpha1.PromotionStrategy{}).Name()
+	kind := reflect.TypeFor[promoterv1alpha1.PromotionStrategy]().Name()
 	gvk := promoterv1alpha1.GroupVersion.WithKind(kind)
 
 	// Build active commit status selectors
@@ -231,13 +247,27 @@ func (r *PromotionStrategyReconciler) upsertChangeTransferPolicy(ctx context.Con
 		}
 	}
 
+	activePath := ps.Spec.ActivePath
+	if environment.ActivePath != "" {
+		activePath = environment.ActivePath
+	}
+
+	proposedBranch := fmt.Sprintf("%s-%s", environment.Branch, "next")
+	if activePath != "" {
+		proposedBranch = path.Join(proposedBranch, activePath)
+	}
+
 	// Build the spec
 	ctpSpec := acv1alpha1.ChangeTransferPolicySpec().
 		WithRepositoryReference(acv1alpha1.ObjectReference().WithName(ps.Spec.RepositoryReference.Name)).
-		WithProposedBranch(fmt.Sprintf("%s-%s", environment.Branch, "next")).
+		WithProposedBranch(proposedBranch).
 		WithActiveBranch(environment.Branch).
 		WithActiveCommitStatuses(activeCommitStatuses...).
 		WithProposedCommitStatuses(proposedCommitStatuses...)
+
+	if activePath != "" {
+		ctpSpec = ctpSpec.WithActivePath(activePath)
+	}
 
 	if environment.AutoMerge != nil {
 		ctpSpec = ctpSpec.WithAutoMerge(*environment.AutoMerge)
@@ -555,9 +585,9 @@ func (r *PromotionStrategyReconciler) createOrUpdatePreviousEnvironmentCommitSta
 	logger := log.FromContext(ctx)
 
 	// TODO: do we like this name proposed-<name>?
-	csName := utils.KubeSafeUniqueName(ctx, promoterv1alpha1.PreviousEnvProposedCommitPrefixNameLabel+ctp.Name)
+	csName := utils.KubeSafeUniqueName(promoterv1alpha1.PreviousEnvProposedCommitPrefixNameLabel + ctp.Name)
 
-	kind := reflect.TypeOf(promoterv1alpha1.ChangeTransferPolicy{}).Name()
+	kind := reflect.TypeFor[promoterv1alpha1.ChangeTransferPolicy]().Name()
 	gvk := promoterv1alpha1.GroupVersion.WithKind(kind)
 
 	// If there is only one commit status, use the URL from that commit status.
@@ -575,9 +605,14 @@ func (r *PromotionStrategyReconciler) createOrUpdatePreviousEnvironmentCommitSta
 		return nil, fmt.Errorf("failed to marshal previous environment commit statuses: %w", err)
 	}
 
-	description := previousEnvironmentBranch + " - synced and healthy"
-	if phase == promoterv1alpha1.CommitPhasePending && pendingReason != "" {
+	var description string
+	switch {
+	case phase == promoterv1alpha1.CommitPhasePending && pendingReason != "":
 		description = pendingReason
+	case phase == promoterv1alpha1.CommitPhasePending:
+		description = previousEnvironmentBranch + " - waiting for active commit statuses"
+	default:
+		description = previousEnvironmentBranch + " - all active commit statuses passed"
 	}
 
 	// Build the apply configuration
@@ -599,7 +634,7 @@ func (r *PromotionStrategyReconciler) createOrUpdatePreviousEnvironmentCommitSta
 			WithRepositoryReference(acv1alpha1.ObjectReference().
 				WithName(ctp.Spec.RepositoryReference.Name)).
 			WithSha(ctp.Status.Proposed.Hydrated.Sha).
-			WithName(previousEnvironmentBranch + " - synced and healthy").
+			WithName(promoterv1alpha1.PreviousEnvironmentCommitStatusKey).
 			WithDescription(description).
 			WithPhase(phase).
 			WithUrl(url))

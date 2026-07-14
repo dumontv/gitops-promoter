@@ -1,5 +1,7 @@
-//Get duration ago (E.g: 1 day ago)
-export const timeAgo = (dateString: string): string => {
+import type { PromotionStrategy, Rfc3339DateTime } from '../types/promotion';
+
+/** Relative time from an {@link Rfc3339DateTime} (e.g. `"3 hours ago"`). */
+export const timeAgo = (dateString: Rfc3339DateTime): string => {
   const now = new Date();
   const date = new Date(dateString);
 
@@ -45,8 +47,11 @@ export function extractBodyPreTrailer(body: string): string {
   return lines.slice(0, trailerStart).join('\n').trim();
 }
 
-// date formatting (e.g: Jul 5 2025, 12:15pm EDT)
-export function formatDate(date?: string): string {
+/**
+ * Locale display string from an {@link Rfc3339DateTime} such as `2026-05-22T15:00:36Z`.
+ * Shape depends on the browser locale and timezone (e.g. `May 22, 2026, 11:00 AM EDT`).
+ */
+export function formatDate(date?: Rfc3339DateTime): string {
   if (!date) return '-';
   const d = new Date(date);
   return d
@@ -64,20 +69,21 @@ export function formatDate(date?: string): string {
 }
 
 // Get the last commit time from a PromotionStrategy
-export function getLastCommitTime(ps: any): Date | null {
-  //Determine the last commit time between both active/proposed hydrated commit
-  const commitTimes = [
-    ...(ps.status?.environments?.map((env: any) => env.active?.dry?.commitTime) || []),
-    ...(ps.status?.environments?.map((env: any) => env.active?.hydrated?.commitTime) || []),
-    ...(ps.status?.environments?.map((env: any) => env.proposed?.dry?.commitTime) || []),
-    ...(ps.status?.environments?.map((env: any) => env.proposed?.hydrated?.commitTime) || []),
-  ].filter(Boolean);
+export function getLastCommitTime(ps: PromotionStrategy): Date | null {
+  const commitTimes = (
+    ps.status?.environments.flatMap((env) => [
+      env.active.dry?.commitTime,
+      env.active.hydrated?.commitTime,
+      env.proposed.dry?.commitTime,
+      env.proposed.hydrated?.commitTime,
+    ]) ?? []
+  ).filter(Boolean) as Rfc3339DateTime[];
 
   if (commitTimes.length) {
-    return new Date(Math.max(...commitTimes.map((t) => new Date(t as string).getTime())));
+    return new Date(Math.max(...commitTimes.map((t) => new Date(t).getTime())));
   }
 
-  if (ps.metadata?.creationTimestamp) {
+  if (ps.metadata.creationTimestamp) {
     return new Date(ps.metadata.creationTimestamp);
   }
 
