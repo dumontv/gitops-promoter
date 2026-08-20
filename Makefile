@@ -186,11 +186,11 @@ test-deps: ginkgo manifests generate fmt vet envtest
 
 .PHONY: test-parallel
 test-parallel: test-deps ## Run tests in parallel
-	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" go tool ginkgo -p -procs=4 -r -v -cover -coverprofile=cover.out -coverpkg=./... --junit-report=junit.xml internal/
+	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" go tool ginkgo -p -procs=4 -r -v -cover -coverprofile=cover.out -coverpkg=./... --junit-report=junit.xml internal/ webrequestsimulator/
 
 .PHONY: test-parallel-repeat3
 test-parallel-repeat3: test-deps ## Run tests in parallel 3 times to check for flakiness --repeat does not count the first run
-	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" go tool ginkgo -p -procs=4 -r -v -cover -coverprofile=cover.out -coverpkg=./... --junit-report=junit.xml --repeat=2 internal/
+	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" go tool ginkgo -p -procs=4 -r -v -cover -coverprofile=cover.out -coverpkg=./... --junit-report=junit.xml --repeat=2 internal/ webrequestsimulator/
 
 ##@ Fuzzing
 
@@ -441,11 +441,11 @@ KUSTOMIZE_VERSION ?= v5.8.1
 CONTROLLER_TOOLS_VERSION ?= v0.21.0
 ENVTEST_VERSION ?= release-0.24
 GOLANGCI_LINT_VERSION ?= v2.12.2
-DEADCODE_VERSION ?= v0.48.0
+DEADCODE_VERSION ?= v0.49.0
 DEADCODE_FILTER ?= github.com/argoproj-labs/gitops-promoter/internal
-MOCKERY_VERSION ?= v3.7.1
+MOCKERY_VERSION ?= v3.7.3
 NILAWAY_VERSION ?= latest
-GORELEASER_VERSION ?= v2.17.0
+GORELEASER_VERSION ?= v2.17.1
 
 .PHONY: kustomize
 kustomize: $(KUSTOMIZE) ## Download kustomize locally if necessary.
