@@ -213,18 +213,17 @@ func runController(
 	}
 
 	runCtx, shutdown := context.WithCancel(processSignalsCtx)
+	cacheOptions := promotercache.OptionsForInstanceID(instanceID, controllerNamespace)
+	cacheOptions.DefaultNamespaces = defaultNamespaces
 
 	mcMgr, err := mcmanager.New(restConfig, provider, ctrl.Options{
 		Scheme: scheme,
-		Cache:  promotercache.OptionsForInstanceID(instanceID, controllerNamespace),
+		Cache:  cacheOptions,
 		Metrics: metricsserver.Options{
 			BindAddress:    metricsAddr,
 			SecureServing:  secureMetrics,
 			TLSOpts:        tlsOpts,
 			FilterProvider: metrics.ScrapeLogFilterProvider(),
-		},
-		Cache: cache.Options{
-			DefaultNamespaces: defaultNamespaces,
 		},
 		WebhookServer:          webhookServer,
 		HealthProbeBindAddress: probeAddr,
