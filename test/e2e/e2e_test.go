@@ -32,30 +32,6 @@ import (
 const namespace = "promoter-system"
 
 var _ = Describe("controller", Ordered, func() {
-	BeforeAll(func() {
-		By("installing prometheus operator")
-		Expect(utils.InstallPrometheusOperator()).To(Succeed())
-
-		By("installing the cert-manager")
-		Expect(utils.InstallCertManager()).To(Succeed())
-
-		By("creating manager namespace")
-		cmd := exec.Command("kubectl", "create", "ns", namespace)
-		_, _ = utils.Run(cmd)
-	})
-
-	AfterAll(func() {
-		By("uninstalling the Prometheus manager bundle")
-		utils.UninstallPrometheusOperator()
-
-		By("uninstalling the cert-manager bundle")
-		utils.UninstallCertManager()
-
-		By("removing manager namespace")
-		cmd := exec.Command("kubectl", "delete", "ns", namespace)
-		_, _ = utils.Run(cmd)
-	})
-
 	Context("Operator", func() {
 		It("should run successfully", func() {
 			var controllerPodName string
@@ -135,6 +111,9 @@ var _ = Describe("controller", Ordered, func() {
 			if os.Getenv("RUN_APISERVER_E2E") == "" {
 				Skip("set RUN_APISERVER_E2E to run the dashboard aggregation apiserver e2e spec")
 			}
+
+			By("installing cert-manager")
+			Expect(utils.InstallCertManager()).To(Succeed())
 
 			imageTag := "0.0.0-test-e2e"
 			projectimage := "quay.io/argoprojlabs/gitops-promoter:" + imageTag

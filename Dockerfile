@@ -11,11 +11,15 @@ COPY ui/ ./ui/
 
 # Install components-lib dependencies first (use ci for reproducible install from lock file)
 WORKDIR /workspace/ui/components-lib
-RUN npm ci
+RUN --mount=type=secret,id=ca_bundle \
+    if [ -f /run/secrets/ca_bundle ]; then export NODE_EXTRA_CA_CERTS=/run/secrets/ca_bundle; fi; \
+    npm ci
 
 # Install dashboard dependencies (application - has lock file)
 WORKDIR /workspace/ui/dashboard
-RUN npm ci
+RUN --mount=type=secret,id=ca_bundle \
+    if [ -f /run/secrets/ca_bundle ]; then export NODE_EXTRA_CA_CERTS=/run/secrets/ca_bundle; fi; \
+    npm ci
 
 # Build the dashboard
 WORKDIR /workspace/ui/dashboard
@@ -33,7 +37,9 @@ COPY go.mod go.mod
 COPY go.sum go.sum
 # cache deps before building and copying source so that we don't need to re-download as much
 # and so that source changes don't invalidate our downloaded layer
-RUN go mod download
+RUN --mount=type=secret,id=ca_bundle \
+    if [ -f /run/secrets/ca_bundle ]; then export SSL_CERT_FILE=/run/secrets/ca_bundle; fi; \
+    go mod download
 
 # Copy the go source
 COPY cmd/ cmd/
@@ -60,7 +66,10 @@ FROM golang:1.26.6@sha256:640a234f4bea3e399c056b7b8f9c667c4939befae8db2f14e9785e
 WORKDIR /
 
 # Install tini to handle process management and prevent process leaks
-RUN apt-get update && apt-get install -y tini && apt-get clean && rm -rf /var/lib/apt/lists/*
+RUN --mount=type=secret,id=ca_bundle \
+    ca_args="" && \
+    if [ -f /run/secrets/ca_bundle ]; then ca_args="-o Acquire::https::CaInfo=/run/secrets/ca_bundle"; fi && \
+    apt-get ${ca_args} update && apt-get ${ca_args} install -y tini && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 RUN mkdir /git
 COPY --from=builder /workspace/gitops-promoter .

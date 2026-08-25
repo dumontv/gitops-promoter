@@ -21,6 +21,8 @@ Thanks for helping improve GitOps Promoter. The project is still young; we keep 
 
 Substantive new or changed **user-facing behavior** (APIs, controllers, webhooks, or UI) should include **automated tests** in the same pull request unless maintainers explicitly agree otherwise. Reviewers expect this during code review, and **failing tests block merge**.
 
+Run the end-to-end suite with `make test-e2e`. This target creates a uniquely named Kind cluster with an isolated kubeconfig, verifies that the cluster was created for the current test invocation, and deletes it afterward. The suite fails closed when invoked directly with `go test ./test/e2e` or when its ownership evidence does not match; it never uses the ambient kubeconfig context.
+
 **How we test (stack):**
 
 - **Go (controller and cluster behavior):** [Ginkgo](https://onsi.github.io/ginkgo/) suites with **envtest**, which runs a real Kubernetes API server from test binaries for integration-style tests against our APIs and reconcilers.
