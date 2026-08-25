@@ -106,8 +106,10 @@ These files are auto-generated and should not be edited manually:
 ```bash
 make test              # Run all tests
 make test-parallel     # Run tests in parallel (faster)
-make test-e2e          # Run end-to-end tests
+make test-e2e          # Create a disposable Kind cluster and run end-to-end tests
 ```
+
+The E2E suite intentionally rejects direct `go test ./test/e2e` invocations and ambient kubeconfig contexts.
 
 ### Test Patterns
 - Use table-driven tests for multiple similar test cases

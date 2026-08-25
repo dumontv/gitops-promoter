@@ -1,5 +1,5 @@
 /*
-Copyright 2024.
+Copyright 2026.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -14,26 +14,17 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package e2e
+package e2ecluster
 
 import (
-	"fmt"
 	"testing"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-
-	"github.com/argoproj-labs/gitops-promoter/test/utils"
 )
 
-// Run e2e tests using the Ginkgo runner.
-func TestE2E(t *testing.T) {
-	if err := utils.InitializeOwnedCluster(); err != nil {
-		t.Fatal(err)
-	}
+func TestE2ECluster(t *testing.T) {
 	t.Parallel()
 	RegisterFailHandler(Fail)
-
-	fmt.Fprint(GinkgoWriter, "Starting promoter suite\n") //nolint:errcheck // logging to test output, error not critical
-	RunSpecs(t, "e2e suite")
+	RunSpecs(t, "E2E cluster safety suite")
 }

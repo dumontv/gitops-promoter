@@ -18,47 +18,62 @@ package utils
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
+	"time"
 
 	ginkgov2 "github.com/onsi/ginkgo/v2"
+
+	"github.com/argoproj-labs/gitops-promoter/internal/e2ecluster"
 )
 
 const (
-	prometheusOperatorVersion = "v0.68.0"
-	prometheusOperatorURL     = "https://github.com/prometheus-operator/prometheus-operator/" +
-		"releases/download/%s/bundle.yaml"
-
 	certmanagerVersion = "v1.5.3"
 	certmanagerURLTmpl = "https://github.com/jetstack/cert-manager/releases/download/%s/cert-manager.yaml"
 )
 
-func warnError(err error) {
-	//nolint:errcheck // logging to test output, error not critical
-	fmt.Fprintf(ginkgov2.GinkgoWriter, "warning: %v\n", err)
-}
+var (
+	environmentMu sync.RWMutex
+	environment   *e2ecluster.Environment
+)
 
-// InstallPrometheusOperator installs the prometheus Operator to be used to export the enabled metrics.
-func InstallPrometheusOperator() error {
-	url := fmt.Sprintf(prometheusOperatorURL, prometheusOperatorVersion)
-	cmd := exec.CommandContext(context.Background(), "kubectl", "create", "-f", url)
-	_, err := Run(cmd)
-	return err
+// InitializeOwnedCluster verifies and pins the disposable cluster used by the E2E suite.
+func InitializeOwnedCluster() error {
+	env, err := e2ecluster.FromEnvironment(os.Getenv)
+	if err != nil {
+		return fmt.Errorf("load owned cluster environment: %w", err)
+	}
+	if err := e2ecluster.Verify(context.Background(), env, e2ecluster.RunCommand, time.Now().UTC()); err != nil {
+		return fmt.Errorf("refusing to run E2E tests: %w", err)
+	}
+	environmentMu.Lock()
+	environment = &env
+	environmentMu.Unlock()
+	return nil
 }
 
 // Run executes the provided command within this context
 func Run(cmd *exec.Cmd) ([]byte, error) {
-	dir, _ := GetProjectDir()
-	cmd.Dir = dir
-
-	if err := os.Chdir(cmd.Dir); err != nil {
-		//nolint:errcheck // logging to test output, error not critical
-		fmt.Fprintf(ginkgov2.GinkgoWriter, "chdir dir: %s\n", err)
+	environmentMu.RLock()
+	env := environment
+	environmentMu.RUnlock()
+	if env == nil {
+		return nil, errors.New("E2E cluster has not been verified")
+	}
+	if err := e2ecluster.VerifyCurrent(context.Background(), *env, e2ecluster.RunCommand); err != nil {
+		return nil, fmt.Errorf("refusing E2E command: %w", err)
 	}
 
-	cmd.Env = append(os.Environ(), "GO111MODULE=on")
+	dir, _ := GetProjectDir()
+	cmd.Dir = dir
+	if err := e2ecluster.ConfigureCommand(cmd, *env); err != nil {
+		return nil, fmt.Errorf("configure E2E command: %w", err)
+	}
+	cmd.Env = append(cmd.Env, "GO111MODULE=on")
 	command := strings.Join(cmd.Args, " ")
 
 	//nolint:errcheck // logging to test output, error not critical
@@ -69,24 +84,6 @@ func Run(cmd *exec.Cmd) ([]byte, error) {
 	}
 
 	return output, nil
-}
-
-// UninstallPrometheusOperator uninstalls the prometheus
-func UninstallPrometheusOperator() {
-	url := fmt.Sprintf(prometheusOperatorURL, prometheusOperatorVersion)
-	cmd := exec.CommandContext(context.Background(), "kubectl", "delete", "-f", url)
-	if _, err := Run(cmd); err != nil {
-		warnError(err)
-	}
-}
-
-// UninstallCertManager uninstalls the cert manager
-func UninstallCertManager() {
-	url := fmt.Sprintf(certmanagerURLTmpl, certmanagerVersion)
-	cmd := exec.CommandContext(context.Background(), "kubectl", "delete", "-f", url)
-	if _, err := Run(cmd); err != nil {
-		warnError(err)
-	}
 }
 
 // InstallCertManager installs the cert manager bundle.
@@ -110,11 +107,13 @@ func InstallCertManager() error {
 
 // LoadImageToKindClusterWithName loads a local docker image to the kind cluster
 func LoadImageToKindClusterWithName(name string) error {
-	cluster := "kind"
-	if v, ok := os.LookupEnv("KIND_CLUSTER"); ok {
-		cluster = v
+	environmentMu.RLock()
+	env := environment
+	environmentMu.RUnlock()
+	if env == nil {
+		return errors.New("E2E cluster has not been verified")
 	}
-	kindOptions := []string{"load", "docker-image", name, "--name", cluster}
+	kindOptions := []string{"load", "docker-image", name, "--name", env.ClusterName}
 	cmd := exec.CommandContext(context.Background(), "kind", kindOptions...)
 	_, err := Run(cmd)
 	return err
